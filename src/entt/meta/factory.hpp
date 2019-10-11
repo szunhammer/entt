@@ -9,6 +9,7 @@
 #include <functional>
 #include <type_traits>
 #include "../config/config.h"
+#include "../core/type_traits.hpp"
 #include "policy.hpp"
 #include "meta.hpp"
 
@@ -261,29 +262,20 @@ class meta_factory {
         return node && (node->key() == key || duplicate(key, node->next));
     }
 
-    template<typename>
-    internal::meta_prop_node * properties() {
-        return nullptr;
-    }
-
-    template<typename Owner, typename Property, typename... Other>
-    internal::meta_prop_node * properties(Property &&property, Other &&... other) {
-        static std::remove_cv_t<std::remove_reference_t<Property>> prop{};
-
+    template<auto Key, auto Value>
+    void prop(property<Key, Value>) {
         static internal::meta_prop_node node{
-            nullptr,
+            *props,
             []() -> meta_any {
-                return std::as_const(std::get<0>(prop));
+                return Key;
             },
             []() -> meta_any {
-                return std::as_const(std::get<1>(prop));
+                return Value;
             }
         };
 
-        prop = std::forward<Property>(property);
-        node.next = properties<Owner>(std::forward<Other>(other)...);
-        ENTT_ASSERT(!duplicate(meta_any{std::get<0>(prop)}, node.next));
-        return &node;
+        ENTT_ASSERT(!duplicate(meta_any{Key}, *props));
+        *props = &node;
     }
 
 public:
@@ -291,22 +283,31 @@ public:
     meta_factory() ENTT_NOEXCEPT = default;
 
     /**
-     * @brief Extends a meta type by assigning it an identifier and properties.
-     * @tparam Property Types of properties to assign to the meta type.
-     * @param identifier Unique identifier.
-     * @param property Properties to assign to the meta type.
+     * @brief Assigns properties to the last meta object created.
+     * @tparam Property Properties to assign to the meta object.
      * @return A meta factory for the parent type.
      */
     template<typename... Property>
-    meta_factory type(const ENTT_ID_TYPE identifier, Property &&... property) ENTT_NOEXCEPT {
+    meta_factory prop() {
+        ENTT_ASSERT(props);
+        (prop(Property{}), ...);
+        return *this;
+    }
+
+    /**
+     * @brief Extends a meta type by assigning it an identifier.
+     * @param identifier Unique identifier.
+     * @return A meta factory for the parent type.
+     */
+    meta_factory type(const ENTT_ID_TYPE identifier) ENTT_NOEXCEPT {
         auto * const node = internal::meta_info<Type>::resolve();
 
         node->identifier = identifier;
-        node->prop = properties<Type>(std::forward<Property>(property)...);
         ENTT_ASSERT(!duplicate(identifier, *internal::meta_info<>::ctx));
         ENTT_ASSERT(!duplicate(node, *internal::meta_info<>::ctx));
         node->next = *internal::meta_info<>::ctx;
         *internal::meta_info<>::ctx = node;
+        props = &node->prop;
 
         return *this;
     }
@@ -336,6 +337,7 @@ public:
         ENTT_ASSERT(!duplicate(&node, type->base));
         node.next = type->base;
         type->base = &node;
+        props = nullptr;
 
         return *this;
     }
@@ -366,6 +368,7 @@ public:
         ENTT_ASSERT(!duplicate(&node, type->conv));
         node.next = type->conv;
         type->conv = &node;
+        props = nullptr;
 
         return *this;
     }
@@ -399,6 +402,7 @@ public:
         ENTT_ASSERT(!duplicate(&node, type->conv));
         node.next = type->conv;
         type->conv = &node;
+        props = nullptr;
 
         return *this;
     }
@@ -414,12 +418,10 @@ public:
      *
      * @tparam Func The actual function to use as a constructor.
      * @tparam Policy Optional policy (no policy set by default).
-     * @tparam Property Types of properties to assign to the meta data.
-     * @param property Properties to assign to the meta data.
      * @return A meta factory for the parent type.
      */
-    template<auto Func, typename Policy = as_is_t, typename... Property>
-    meta_factory ctor(Property &&... property) ENTT_NOEXCEPT {
+    template<auto Func, typename Policy = as_is_t>
+    meta_factory ctor() ENTT_NOEXCEPT {
         using helper_type = internal::meta_function_helper_t<decltype(Func)>;
         static_assert(std::is_same_v<typename helper_type::return_type, Type>);
         auto * const type = internal::meta_info<Type>::resolve();
@@ -435,10 +437,10 @@ public:
             }
         };
 
-        node.prop = properties<typename helper_type::args_type>(std::forward<Property>(property)...);
         ENTT_ASSERT(!duplicate(&node, type->ctor));
         node.next = type->ctor;
         type->ctor = &node;
+        props = &node.prop;
 
         return *this;
     }
@@ -451,12 +453,10 @@ public:
      * type that can be invoked with parameters whose types are those given.
      *
      * @tparam Args Types of arguments to use to construct an instance.
-     * @tparam Property Types of properties to assign to the meta data.
-     * @param property Properties to assign to the meta data.
      * @return A meta factory for the parent type.
      */
-    template<typename... Args, typename... Property>
-    meta_factory ctor(Property &&... property) ENTT_NOEXCEPT {
+    template<typename... Args>
+    meta_factory ctor() ENTT_NOEXCEPT {
         using helper_type = internal::meta_function_helper_t<Type(*)(Args...)>;
         auto * const type = internal::meta_info<Type>::resolve();
 
@@ -471,10 +471,10 @@ public:
             }
         };
 
-        node.prop = properties<typename helper_type::args_type>(std::forward<Property>(property)...);
         ENTT_ASSERT(!duplicate(&node, type->ctor));
         node.next = type->ctor;
         type->ctor = &node;
+        props = &node.prop;
 
         return *this;
     }
@@ -515,6 +515,7 @@ public:
 
         ENTT_ASSERT(!type->dtor);
         type->dtor = &node;
+        props = nullptr;
 
         return *this;
     }
@@ -529,13 +530,11 @@ public:
      *
      * @tparam Data The actual variable to attach to the meta type.
      * @tparam Policy Optional policy (no policy set by default).
-     * @tparam Property Types of properties to assign to the meta data.
      * @param identifier Unique identifier.
-     * @param property Properties to assign to the meta data.
      * @return A meta factory for the parent type.
      */
-    template<auto Data, typename Policy = as_is_t, typename... Property>
-    meta_factory data(const ENTT_ID_TYPE identifier, Property &&... property) ENTT_NOEXCEPT {
+    template<auto Data, typename Policy = as_is_t>
+    meta_factory data(const ENTT_ID_TYPE identifier) ENTT_NOEXCEPT {
         auto * const type = internal::meta_info<Type>::resolve();
         internal::meta_data_node *curr = nullptr;
 
@@ -554,7 +553,6 @@ public:
                 [](meta_handle, meta_any) -> meta_any { return Data; }
             };
 
-            node.prop = properties<std::integral_constant<Type, Data>>(std::forward<Property>(property)...);
             curr = &node;
         } else if constexpr(std::is_member_object_pointer_v<decltype(Data)>) {
             using data_type = std::remove_reference_t<decltype(std::declval<Type>().*Data)>;
@@ -571,7 +569,6 @@ public:
                 &internal::getter<Type, Data, Policy>
             };
 
-            node.prop = properties<std::integral_constant<decltype(Data), Data>>(std::forward<Property>(property)...);
             curr = &node;
         } else {
             static_assert(std::is_pointer_v<std::decay_t<decltype(Data)>>);
@@ -589,7 +586,6 @@ public:
                 &internal::getter<Type, Data, Policy>
             };
 
-            node.prop = properties<std::integral_constant<decltype(Data), Data>>(std::forward<Property>(property)...);
             curr = &node;
         }
 
@@ -598,6 +594,7 @@ public:
         ENTT_ASSERT(!duplicate(curr, type->data));
         curr->next = type->data;
         type->data = curr;
+        props = &curr->prop;
 
         return *this;
     }
@@ -619,14 +616,11 @@ public:
      * @tparam Setter The actual function to use as a setter.
      * @tparam Getter The actual function to use as a getter.
      * @tparam Policy Optional policy (no policy set by default).
-     * @tparam Property Types of properties to assign to the meta data.
      * @param identifier Unique identifier.
-     * @param property Properties to assign to the meta data.
      * @return A meta factory for the parent type.
      */
-    template<auto Setter, auto Getter, typename Policy = as_is_t, typename... Property>
-    meta_factory data(const ENTT_ID_TYPE identifier, Property &&... property) ENTT_NOEXCEPT {
-        using owner_type = std::tuple<std::integral_constant<decltype(Setter), Setter>, std::integral_constant<decltype(Getter), Getter>>;
+    template<auto Setter, auto Getter, typename Policy = as_is_t>
+    meta_factory data(const ENTT_ID_TYPE identifier) ENTT_NOEXCEPT {
         using underlying_type = std::invoke_result_t<decltype(Getter), Type &>;
         static_assert(std::is_invocable_v<decltype(Setter), Type &, underlying_type>);
         auto * const type = internal::meta_info<Type>::resolve();
@@ -644,11 +638,11 @@ public:
         };
 
         node.identifier = identifier;
-        node.prop = properties<owner_type>(std::forward<Property>(property)...);
         ENTT_ASSERT(!duplicate(identifier, type->data));
         ENTT_ASSERT(!duplicate(&node, type->data));
         node.next = type->data;
         type->data = &node;
+        props = &node.prop;
 
         return *this;
     }
@@ -663,14 +657,11 @@ public:
      *
      * @tparam Candidate The actual function to attach to the meta type.
      * @tparam Policy Optional policy (no policy set by default).
-     * @tparam Property Types of properties to assign to the meta function.
      * @param identifier Unique identifier.
-     * @param property Properties to assign to the meta function.
      * @return A meta factory for the parent type.
      */
-    template<auto Candidate, typename Policy = as_is_t, typename... Property>
-    meta_factory func(const ENTT_ID_TYPE identifier, Property &&... property) ENTT_NOEXCEPT {
-        using owner_type = std::integral_constant<decltype(Candidate), Candidate>;
+    template<auto Candidate, typename Policy = as_is_t>
+    meta_factory func(const ENTT_ID_TYPE identifier) ENTT_NOEXCEPT {
         using helper_type = internal::meta_function_helper_t<decltype(Candidate)>;
         auto * const type = internal::meta_info<Type>::resolve();
 
@@ -690,11 +681,11 @@ public:
         };
 
         node.identifier = identifier;
-        node.prop = properties<owner_type>(std::forward<Property>(property)...);
         ENTT_ASSERT(!duplicate(identifier, type->func));
         ENTT_ASSERT(!duplicate(&node, type->func));
         node.next = type->func;
         type->func = &node;
+        props = &node.prop;
 
         return *this;
     }
@@ -710,6 +701,9 @@ public:
     void reset() ENTT_NOEXCEPT {
         internal::meta_info<Type>::reset();
     }
+
+private:
+    entt::internal::meta_prop_node **props{nullptr};
 };
 
 
